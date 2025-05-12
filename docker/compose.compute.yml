@@ -1,0 +1,83 @@
+services:
+  trino:
+    image: "trinodb/trino:${TRINO_VERSION:-435}"
+    hostname: trino-coordinator          # ➜ igual ao exemplo
+    container_name: trino
+    restart: unless-stopped
+
+    user: "0:0"
+    # ── Porta padrão exposta (útil para acesso direto sem Traefik)
+#    ports:
+#      - "8080:8080"
+
+    # ── Diretório de trabalho (boa prática do exemplo)
+    working_dir: /usr/lib/trino
+
+    # ── Variáveis de ambiente
+    env_file:
+      - ../.env
+    environment:
+      AWS_ACCESS_KEY_ID:     "${AWS_ACCESS_KEY_ID}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY}"
+
+    # ── Configuração montada → /etc/trino
+    volumes:
+      - ../trino/etc:/etc/trino
+
+    # ── Redes
+    networks:
+      - dlake-net
+      - traefik-net
+
+    # ── Dependências
+    depends_on:
+      - hive-metastore
+      - minio
+
+    # ── Healthcheck
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/info"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # ── (Opcional) limites de recursos
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1500M
+
+    # ── Labels Traefik (mantidos)
+    labels:
+      - "traefik.enable=true"
+
+      # HTTP → HTTPS redirect
+      - "traefik.http.routers.trino-http.rule=Host(`trino.teasersolucoes.com.br`)"
+      - "traefik.http.routers.trino-http.entrypoints=web"
+      - "traefik.http.routers.trino-http.middlewares=redirect-https@docker"
+      - "traefik.http.middlewares.redirect-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.redirect-https.redirectscheme.permanent=true"
+
+      # HTTPS
+      - "traefik.http.routers.trino.rule=Host(`trino.teasersolucoes.com.br`)"
+      - "traefik.http.routers.trino.entrypoints=websecure"
+      - "traefik.http.routers.trino.tls=true"
+      - "traefik.http.routers.trino.tls.certresolver=mytlschallenge"
+      - "traefik.http.services.trino.loadbalancer.server.port=8080"
+
+      # Secure-headers
+      - "traefik.http.routers.trino.middlewares=trino-secure-headers@docker"
+      - "traefik.http.middlewares.trino-secure-headers.headers.stsSeconds=63072000"
+      - "traefik.http.middlewares.trino-secure-headers.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.trino-secure-headers.headers.stsPreload=true"
+      - "traefik.http.middlewares.trino-secure-headers.headers.browserXSSFilter=true"
+      - "traefik.http.middlewares.trino-secure-headers.headers.contentTypeNosniff=true"
+      - "traefik.http.middlewares.trino-secure-headers.headers.frameDeny=true"
+
+networks:
+  dlake-net:
+    external: true
+  traefik-net:
+    external: true

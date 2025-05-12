@@ -1,0 +1,71 @@
+services:
+  # ──────────────────────────────────────────────
+  # 1) PostgreSQL COMPARTILHADO (já existe)
+  # ──────────────────────────────────────────────
+  postgres:
+    image: "postgres:${POSTGRES_VERSION:-16}"
+    container_name: postgres
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER}      # ex.: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB:       superset              # banco do Superset
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./init/10-superset.sql:/docker-entrypoint-initdb.d/10-superset.sql:ro
+
+    networks: [dlake-net]
+    labels:
+      - 'traefik.docker.network=web'
+
+  # ──────────────────────────────────────────────
+  # 2) Hive Metastore (Starburst)                #
+  # ──────────────────────────────────────────────
+  hive-metastore:
+    image: starburstdata/hive:3.1.2-e.18
+    container_name: hive
+    hostname: hive-metastore
+    restart: unless-stopped
+    depends_on: [postgres]
+    networks: [dlake-net]
+    ports: ["9083:9083"]
+    labels:
+      - 'traefik.docker.network=web'
+    environment:
+      # JDBC ↔ Postgres (já com driver embutido)
+      HIVE_METASTORE_DRIVER: org.postgresql.Driver
+      HIVE_METASTORE_JDBC_URL: jdbc:postgresql://postgres:5432/metastore_db
+      HIVE_METASTORE_USER: hive
+      HIVE_METASTORE_PASSWORD: hivepw
+
+      # Diretório default das tabelas (vai para MinIO via S3A)
+      HIVE_METASTORE_WAREHOUSE_DIR: s3://bronze/
+
+      # Credenciais MinIO (S3) – usadas pelo Hive **e** Trino
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_PATH_STYLE_ACCESS: "true"
+
+      # Mesmas variáveis prefixadas com FS_S3A_ (exigidas pelo Hive)
+      FS_S3A_ENDPOINT: http://minio:9000
+      FS_S3A_ACCESS_KEY: ${MINIO_ROOT_USER}
+      FS_S3A_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      FS_S3A_PATH_STYLE_ACCESS: "true"
+      FS_S3A_CONNECTION_SSL_ENABLED: "false"
+
+      # Admin do Hive
+      HIVE_METASTORE_USERS_IN_ADMIN_ROLE: "admin"
+
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 6<> /dev/tcp/localhost/9083'"]
+      interval: 20s
+      retries: 5
+
+volumes:
+  pg-data:
+
+networks:
+  dlake-net:
+    external: true

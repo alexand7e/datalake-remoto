@@ -1,0 +1,88 @@
+services:
+  superset:
+    image: apache/superset:latest-dev    # multi-arch (amd64 + arm64)
+    platform: linux/arm64
+    container_name: superset
+    env_file: ../.env
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - dlake-net
+      - traefik-net
+    ports:
+      - "8088:8088"
+    deploy:
+      resources:
+        limits:
+          memory: 3.68GiB
+
+    environment:
+      # Chave Flask/CSRF
+      - SECRET_KEY=${SUPERSET_SECRET_KEY}
+      # Conexão ao metadata DB (Postgres externo)
+      - SUPERSET_DATABASE_URI=${SQLALCHEMY_DATABASE_URI}
+      # Cache / broker
+      - REDIS_URL=${REDIS_URL}
+      # Admin criado no bootstrap
+      - ADMIN_USER=${ADMIN_USER}
+      - ADMIN_EMAIL=${ADMIN_EMAIL}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      # Timeout do Gunicorn
+      - SUPERSET_WEBSERVER_TIMEOUT=${SUPERSET_WEBSERVER_TIMEOUT}
+      # Ajuste de proxy
+      - ENABLE_PROXY_FIX=true
+
+      - SUPERSET_CONFIG_PATH=/app/superset_config.py
+      - BUILD_SUPERSET_FRONTEND_IN_DOCKER=false
+
+    volumes:
+      # Mapeia o arquivo de configuração customizado
+      - ./init/superset_config.py:/app/superset_config.py
+
+    command: >
+      /bin/bash -c "
+        pip install psycopg2-binary pillow &&
+        superset db upgrade &&
+        superset init &&
+        /usr/bin/run-server.sh
+      "
+
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      # --- HTTP ➜ HTTPS ---
+      - "traefik.http.routers.superset-http.rule=Host(`bi.teasersolucoes.com.br`)"
+      - "traefik.http.routers.superset-http.entrypoints=web"
+      - "traefik.http.routers.superset-http.middlewares=redirect-https@docker"
+      - "traefik.http.middlewares.redirect-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.redirect-https.redirectscheme.permanent=true"
+
+      # --- HTTPS principal ---
+      - "traefik.http.routers.superset.rule=Host(`bi.teasersolucoes.com.br`)"
+      - "traefik.http.routers.superset.entrypoints=websecure"
+      - "traefik.http.routers.superset.tls=true"
+      - "traefik.http.routers.superset.tls.certresolver=mytlschallenge"
+      - "traefik.http.services.superset.loadbalancer.server.port=8088"
+
+      # --- Cabeçalhos de segurança ---
+      - "traefik.http.routers.superset.middlewares=superset-secure-headers@docker"
+      - "traefik.http.middlewares.superset-secure-headers.headers.stsSeconds=63072000"
+      - "traefik.http.middlewares.superset-secure-headers.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.superset-secure-headers.headers.stsPreload=true"
+      - "traefik.http.middlewares.superset-secure-headers.headers.browserXSSFilter=true"
+      - "traefik.http.middlewares.superset-secure-headers.headers.contentTypeNosniff=true"
+      - "traefik.http.middlewares.superset-secure-headers.headers.frameDeny=true"
+
+  redis:
+    image: redis:7
+    container_name: redis
+    restart: unless-stopped
+    networks:
+      - dlake-net
+
+networks:
+  dlake-net:
+    external: true
+  traefik-net:
+    external: true
